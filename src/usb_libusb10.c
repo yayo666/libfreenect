@@ -151,6 +151,55 @@ FN_INTERNAL libusb_device * fnusb_find_sibling_device(freenect_context* ctx, lib
 	return NULL;
 }
 
+FN_INTERNAL char* fnusb_get_serial(freenect_context* ctx, libusb_device* device, libusb_device_handle* handle)
+{
+	if (ctx == NULL) return NULL;
+
+	if (device == NULL && handle != NULL) {
+		device = libusb_get_device(handle); // no need to free or unref
+	}
+
+	int res = 0;
+	struct libusb_device_descriptor desc;
+
+	res = libusb_get_device_descriptor(device, &desc);
+	if (res != 0) {
+		FN_WARNING("Failed to get serial descriptor: %s\n", libusb_error_name(res));
+		return NULL;
+	}
+
+	// Verify that a serial number exists to query.  If not, don't touch the device.
+	if (desc.iSerialNumber == 0) {
+		return NULL;
+	}
+
+	libusb_device_handle* localHandle = NULL;
+
+	if (handle == NULL) {
+		res = libusb_open(device, &localHandle);
+		if (res != 0) {
+			FN_WARNING("Failed to open device for serial: %s\n", libusb_error_name(res));
+			return NULL;
+		}
+		handle = localHandle;
+	}
+
+	// Read string descriptor referring to serial number.
+	unsigned char serial[256]; // String descriptors are at most 256 bytes.
+	res = libusb_get_string_descriptor_ascii(handle, desc.iSerialNumber, serial, 256);
+
+	if (localHandle != NULL) {
+		libusb_close(localHandle);
+	}
+
+	if (res < 0) {
+		FN_WARNING("Failed to get serial: %s\n", libusb_error_name(res));
+		return NULL;
+	}
+
+	return strdup(serial);
+}
+
 FN_INTERNAL int fnusb_list_device_attributes(freenect_context *ctx, struct freenect_device_attributes** attribute_list)
 {
 	*attribute_list = NULL; // initialize some return value in case the user is careless.
@@ -161,6 +210,7 @@ FN_INTERNAL int fnusb_list_device_attributes(freenect_context *ctx, struct freen
 		return (count >= INT_MIN) ? (int)count : -1;
 	}
 
+	int res = 0;
 	struct freenect_device_attributes** next_attr = attribute_list;
 
 	// Pass over the list.  For each camera seen, if we already have a camera
@@ -173,79 +223,44 @@ FN_INTERNAL int fnusb_list_device_attributes(freenect_context *ctx, struct freen
 		libusb_device* camera_device = devs[i];
 
 		struct libusb_device_descriptor desc;
-		int res = libusb_get_device_descriptor (camera_device, &desc);
-		if (res < 0)
-		{
+		res = libusb_get_device_descriptor(camera_device, &desc);
+		if (res < 0) {
 			continue;
 		}
 
-		if (desc.idVendor == VID_MICROSOFT && (desc.idProduct == PID_NUI_CAMERA || desc.idProduct == PID_K4W_CAMERA))
+		if (!fnusb_is_camera(desc)) {
+			continue;
+		}
+
+		const char* serial = fnusb_get_serial(ctx, camera_device, NULL);
+
+		// K4W and 1473 don't provide a camera serial; use audio serial instead.
+		const char* const K4W_1473_SERIAL = "0000000000000000";
+		if (serial == NULL || strncmp((const char*)serial, K4W_1473_SERIAL, 16) == 0)
 		{
-			// Verify that a serial number exists to query.  If not, don't touch the device.
-			if (desc.iSerialNumber == 0)
+			libusb_device* audio_device = fnusb_find_sibling_device(ctx, camera_device, devs, count, &fnusb_is_audio);
+			if (audio_device != NULL)
 			{
-				continue;
-			}
-
-			libusb_device_handle *camera_handle;
-			res = libusb_open(camera_device, &camera_handle);
-			if (res != 0)
-			{
-				continue;
-			}
-
-			// Read string descriptor referring to serial number.
-			unsigned char serial[256]; // String descriptors are at most 256 bytes.
-			res = libusb_get_string_descriptor_ascii(camera_handle, desc.iSerialNumber, serial, 256);
-			libusb_close(camera_handle);
-			if (res < 0)
-			{
-				continue;
-			}
-
-			// K4W and 1473 don't provide a camera serial; use audio serial instead.
-			const char* const K4W_1473_SERIAL = "0000000000000000";
-			if (strncmp((const char*)serial, K4W_1473_SERIAL, 16) == 0)
-			{
-				libusb_device* audio_device = fnusb_find_sibling_device(ctx, camera_device, devs, count, &fnusb_is_audio);
-				if (audio_device != NULL)
-				{
-					struct libusb_device_descriptor audio_desc;
-					res = libusb_get_device_descriptor(audio_device, &audio_desc);
-					if (res != 0)
-					{
-						FN_WARNING("Failed to get audio serial descriptors of K4W or 1473 device: %s\n", libusb_error_name(res));
-					}
-					else
-					{
-						libusb_device_handle * audio_handle = NULL;
-						res = libusb_open(audio_device, &audio_handle);
-						if (res != 0)
-						{
-							FN_WARNING("Failed to open audio device for serial of K4W or 1473 device: %s\n", libusb_error_name(res));
-						}
-						else
-						{
-							res = libusb_get_string_descriptor_ascii(audio_handle, audio_desc.iSerialNumber, serial, 256);
-							libusb_close(audio_handle);
-							if (res != 0)
-							{
-								FN_WARNING("Failed to get audio serial of K4W or 1473 device: %s\n", libusb_error_name(res));
-							}
-						}
-					}
+				const char* audio_serial = fnusb_get_serial(ctx, audio_device, NULL);
+				if (audio_serial) {
+					free(serial);
+					serial = audio_serial;
 				}
 			}
-
-			// Add item to linked list.
-			struct freenect_device_attributes* current_attr = (struct freenect_device_attributes*)malloc(sizeof(struct freenect_device_attributes));
-			memset(current_attr, 0, sizeof(*current_attr));
-
-			current_attr->camera_serial = strdup((char*)serial);
-			*next_attr = current_attr;
-			next_attr = &(current_attr->next);
-			num_cams++;
 		}
+
+		if (serial == NULL) {
+			continue;
+		}
+
+		// Add item to linked list.
+		struct freenect_device_attributes* current_attr = (struct freenect_device_attributes*)malloc(sizeof(struct freenect_device_attributes));
+		memset(current_attr, 0, sizeof(*current_attr));
+
+		current_attr->camera_serial = serial;
+		*next_attr = current_attr;
+		next_attr = &(current_attr->next);
+		num_cams++;
 	}
 
 	libusb_free_device_list(devs, 1);
