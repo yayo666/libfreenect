@@ -402,7 +402,17 @@ FN_INTERNAL void fnusb_reset_subdevice(fnusb_dev* dev, freenect_device* parent)
 		dev->dev_handle = NULL;
 	}
 
+	if (dev->dev) {
+		libusb_unref_device(dev->dev);
+		dev->dev = NULL;
+	}
+
 	dev->parent = parent;
+}
+
+FN_INTERNAL libusb_device* fnusb_try_ref_device(libusb_device* dev)
+{
+	return dev ? libusb_ref_device(dev) : NULL;
 }
 
 FN_INTERNAL int fnusb_open_subdevices(freenect_device *dev, int index)
@@ -441,7 +451,9 @@ FN_INTERNAL int fnusb_open_subdevices(freenect_device *dev, int index)
 			continue;
 		}
 
-		camera = devs[i]; // found the requested camera
+		camera = devs[i];
+		dev->usb_cam.dev = fnusb_try_ref_device(camera);
+
 		if (ctx->enabled_subdevices & FREENECT_DEVICE_CAMERA)
 		{
 			res = libusb_open(camera, &dev->usb_cam.dev_handle);
@@ -492,10 +504,13 @@ FN_INTERNAL int fnusb_open_subdevices(freenect_device *dev, int index)
 		goto failure;
 	}
 
+
 	// FIND MOTOR
+	libusb_device* motor = fnusb_find_sibling_device(ctx, camera, devs, count, &fnusb_is_motor);
+	dev->usb_motor.dev = fnusb_try_ref_device(motor);
+
 	if (ctx->enabled_subdevices & FREENECT_DEVICE_MOTOR)
 	{
-		libusb_device* motor = fnusb_find_sibling_device(ctx, camera, devs, count, &fnusb_is_motor);
 		if (motor == NULL) {
 			FN_ERROR("Could not find device sibling\n");
 			res = -1;
@@ -529,10 +544,13 @@ FN_INTERNAL int fnusb_open_subdevices(freenect_device *dev, int index)
 		dev->usb_motor.PID = desc.idProduct;
 	}
     
+
 	// FIND AUDIO
+	libusb_device* audio = fnusb_find_sibling_device(ctx, camera, devs, count, &fnusb_is_audio);
+	dev->usb_audio.dev = fnusb_try_ref_device(audio);
+
 	if (ctx->enabled_subdevices & FREENECT_DEVICE_AUDIO)
 	{
-		libusb_device* audio = fnusb_find_sibling_device(ctx, camera, devs, count, &fnusb_is_audio);
 		if (audio == NULL) {
 			FN_ERROR("Could not find device sibling\n");
 			res = -1;
