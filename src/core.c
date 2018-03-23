@@ -169,7 +169,7 @@ FREENECTAPI int freenect_open_device(freenect_context *ctx, freenect_device **de
 	*dev = pdev;
 
 	// Do device-specific initialization
-	if (pdev->usb_cam.dev) {
+	if (pdev->usb_cam.dev_handle) {
 		if (freenect_camera_init(pdev) < 0) {
 			return -1;
 		}
@@ -207,7 +207,7 @@ FREENECTAPI int freenect_close_device(freenect_device *dev)
 	freenect_context *ctx = dev->parent;
 	int res;
 
-	if (dev->usb_cam.dev) {
+	if (dev->usb_cam.dev_handle) {
 		freenect_camera_teardown(dev);
 	}
 

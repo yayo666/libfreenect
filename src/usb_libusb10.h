@@ -56,7 +56,7 @@ typedef struct {
 
 typedef struct {
 	freenect_device *parent; //so we can go up from the libusb userdata
-	libusb_device_handle *dev;
+	libusb_device_handle *dev_handle;
 	int device_dead; // set to 1 when the underlying libusb_device_handle vanishes (ie, Kinect was unplugged)
 	int VID;
 	int PID;
