@@ -151,11 +151,15 @@ FN_INTERNAL libusb_device * fnusb_find_sibling_device(freenect_context* ctx, lib
 	return NULL;
 }
 
-FN_INTERNAL char* fnusb_get_serial(freenect_context* ctx, libusb_device* device, libusb_device_handle* handle)
+FN_INTERNAL char* usb_get_serial(freenect_context* ctx, libusb_device* device, libusb_device_handle* handle)
 {
 	if (ctx == NULL) return NULL;
 
-	if (device == NULL && handle != NULL) {
+	if (device == NULL) {
+		if (handle == NULL) {
+			FN_WARNING("No handle or device for serial\n");
+			return NULL;
+		}
 		device = libusb_get_device(handle); // no need to free or unref
 	}
 
@@ -170,6 +174,7 @@ FN_INTERNAL char* fnusb_get_serial(freenect_context* ctx, libusb_device* device,
 
 	// Verify that a serial number exists to query.  If not, don't touch the device.
 	if (desc.iSerialNumber == 0) {
+		FN_WARNING("Device has no serial number\n");
 		return NULL;
 	}
 
@@ -184,7 +189,6 @@ FN_INTERNAL char* fnusb_get_serial(freenect_context* ctx, libusb_device* device,
 		handle = localHandle;
 	}
 
-	// Read string descriptor referring to serial number.
 	unsigned char serial[256]; // String descriptors are at most 256 bytes.
 	res = libusb_get_string_descriptor_ascii(handle, desc.iSerialNumber, serial, 256);
 
@@ -197,7 +201,17 @@ FN_INTERNAL char* fnusb_get_serial(freenect_context* ctx, libusb_device* device,
 		return NULL;
 	}
 
-	return strdup(serial);
+	const char* const K4W_1473_SERIAL = "0000000000000000";
+	if (strncmp((const char*)serial, K4W_1473_SERIAL, 16) == 0) {
+		return NULL; // K4W and 1473 provide an empty serial; more easily handled as NULL.
+	}
+
+	return strndup((const char*)serial, sizeof(serial));
+}
+
+FN_INTERNAL char* fnusb_get_serial(fnusb_dev* device)
+{
+	return usb_get_serial(device->parent->parent, device->dev, device->dev_handle);
 }
 
 FN_INTERNAL int fnusb_list_device_attributes(freenect_context *ctx, struct freenect_device_attributes** attribute_list)
@@ -232,16 +246,13 @@ FN_INTERNAL int fnusb_list_device_attributes(freenect_context *ctx, struct freen
 			continue;
 		}
 
-		const char* serial = fnusb_get_serial(ctx, camera_device, NULL);
-
-		// K4W and 1473 don't provide a camera serial; use audio serial instead.
-		const char* const K4W_1473_SERIAL = "0000000000000000";
-		if (serial == NULL || strncmp((const char*)serial, K4W_1473_SERIAL, 16) == 0)
+		char* serial = usb_get_serial(ctx, camera_device, NULL);
+		if (serial == NULL)
 		{
 			libusb_device* audio_device = fnusb_find_sibling_device(ctx, camera_device, devs, count, &fnusb_is_audio);
 			if (audio_device != NULL)
 			{
-				const char* audio_serial = fnusb_get_serial(ctx, audio_device, NULL);
+				char* audio_serial = usb_get_serial(ctx, audio_device, NULL);
 				if (audio_serial) {
 					free(serial);
 					serial = audio_serial;
